@@ -2,7 +2,7 @@ Require Import Reals.
 Require Import List.
 Require Import Fourier.
 
-(* Only tested with coq 8.4pl6 *)
+(* Tested with coq 8.5pl1 *)
 
 Local Open Scope R_scope.
 
@@ -10,9 +10,9 @@ Local Open Scope R_scope.
 Record NNR : Type := mkNNR { NNRr : R; NNR_pos : 0 <= NNRr }.
 
 Program Definition NNR_0 := @mkNNR 0 _.
-Solve Obligations using fourier.
+Solve Obligations with fourier.
 Program Definition NNR_1 := @mkNNR 1 _.
-Solve Obligations using fourier.
+Solve Obligations with fourier.
 
 Program Definition NNR_plus (a b : NNR) : NNR := @mkNNR (NNRr a + NNRr b) _.
 Next Obligation.
@@ -42,21 +42,18 @@ End PCFG_params.
 Module PCFG (params : PCFG_params).
   Import params.
 
-  Let string := list Σ.
+  Definition string := list Σ.
 
   Hint Resolve Σ_dec.
 
-  Definition string_dec : dec_def string.
-    unfold dec_def.
-    decide equality.
-  Defined.
-  Opaque string_dec.
+  SearchPattern ({list _ = list _} + {list _ <> list _}).
+
+  Definition string_dec := list_eq_dec Σ_dec.
 
   (* a useful definition of monotonic functions ℕ -> ℝ⁺, eqivalent (not needed
      or proven here) to the standard (a <= b -> f(a) <= f(b)). *)
   Definition natNNRMono (f : nat -> NNR) :=
     forall d, NNRr (f d) <= NNRr (f (S d)).
-  Transparent natNNRMono.
 
   Record monoFn := mkMonoFn { monoFnFn : nat -> NNR;
                               monoFnMono : natNNRMono monoFnFn }.
@@ -71,36 +68,15 @@ Module PCFG (params : PCFG_params).
   | emp : Expr
   | ε : Expr
   | term : Σ -> Expr
-  | U : Expr * monoFn -> Expr * monoFn -> Expr
+  | U : Expr -> monoFn -> Expr -> monoFn -> Expr
   | seq : Expr -> Expr -> Expr
   | nonterm : NT -> Expr.
   Arguments Expr : clear implicits.
 
+  Notation "⟨ e0 , p0 ⟩ ∪ ⟨ e1 , p1 ⟩" := (U e0 p0 e1 p1).
+
   Notation "∅" := emp.
   Infix "·" := seq (right associativity, at level 80).
-
-  Print Expr_rect.
-  (* Coq has trouble with noticing structurality of products within an
-    inductive, but since it's prettier to have the grouping we define our own
-    rect *)
-  Definition Expr'_rect :=
-    fun (NT : Type) (P : Expr NT -> Type) (f : P emp) (f0 : P ε)
-        (f1 : forall σ : Σ, P (term σ))
-        (f2 : forall r : Expr NT,
-                P r ->
-                forall (r0 : monoFn) (r1 : Expr NT),
-                  P r1 -> forall r2 : monoFn, P (U (r, r0) (r1, r2)))
-        (f3 : forall r : Expr NT, P r -> forall r0 : Expr NT, P r0 -> P (seq r r0))
-        (f4 : forall n : NT, P (nonterm n)) =>
-      fix F (r : Expr NT) : P r :=
-    match r as r0 return (P r0) with
-      | emp => f
-      | ε => f0
-      | term σ => f1 σ
-      | U (r0, r1) (r2, r3) => f2 r0 (F r0) r1 r2 (F r2) r3
-      | seq r0 r1 => f3 r0 (F r0) r1 (F r1)
-      | nonterm y => f4 y
-    end.
 
   (* A mapping from non-terminals to expressions is almost a grammar, we'll add
   the start expression later *)
@@ -108,7 +84,7 @@ Module PCFG (params : PCFG_params).
 
   (* We need a stronger induction hypothesis that takes into account both
   structural recursion and depth-indexed non-terminal recursion *)
-  Program Definition pcfg_super_rect
+  Lemma pcfg_super_rect
           {NT : Type}
           (rho : rules NT)
           (P : nat -> Expr NT -> Type)
@@ -120,29 +96,20 @@ Module PCFG (params : PCFG_params).
                        (r0 r1 : Expr NT)
                        (p0 p1 : monoFn),
                     P d r0 -> P d r1 ->
-                    P d (U (r0, p0) (r1, p1)))
+                    P d (⟨r0, p0⟩ ∪ ⟨r1, p1⟩))
           (f3 : forall r d,
                   P d r ->
                   forall r0 : Expr NT,
                     P d r0 -> P d (seq r r0))
           (f4 : forall d nt, P d (rho nt) -> P (S d) (nonterm nt))
-  : forall r d, P d r :=
-    fix F r d : P d r :=
-    match r as r0 return (P d r0) with
-      | emp => f d
-      | ε => f0 d
-      | term σ => f1 σ d
-      | U (r0, p0) (r1, p1) => f2 d r0 r1 p0 p1 (F r0 d) (F r1 d)
-      | seq r0 r1 => f3 r0 d (F r0 d) r1 (F r1 d)
-      | nonterm y => _
-    end.
-  Next Obligation.
-    revert y.
-    induction d; intros.
-    apply f5.
+    : forall r d, P d r.
+  Proof.
+    induction r; intuition.
+    revert n.
+    induction d; intuition.
     apply f4.
-    induction (rho y) using Expr'_rect; auto.
-  Defined.
+    induction (rho n); auto.
+  Qed.
 
   (* instance Functor Expr *)
   Fixpoint exprMap {A B} (f : A -> B) (a : Expr A) : Expr B :=
@@ -150,7 +117,7 @@ Module PCFG (params : PCFG_params).
       | ∅ => ∅
       | ε => ε
       | term σ => term σ
-      | U (l, l_prob) (r, r_prob) => U (exprMap f l, l_prob) (exprMap f r, r_prob)
+      | ⟨l, l_prob⟩ ∪ ⟨r, r_prob⟩ => ⟨exprMap f l, l_prob⟩ ∪ ⟨exprMap f r, r_prob⟩
       | l · r => exprMap f l · exprMap f r
       | nonterm nt => nonterm (f nt)
     end.
@@ -257,7 +224,7 @@ Module PCFG (params : PCFG_params).
       | ∅ => NNR_0
       | ε => if string_dec s nil then NNR_1 else NNR_0
       | term c => if string_dec s (c :: nil) then NNR_1 else NNR_0
-      | U (l, pl) (r, pr) =>
+      | ⟨l, pl⟩ ∪ ⟨r, pr⟩ =>
         monoFnFn pl d *** gen_unfixed gen d rho l s +++
         monoFnFn pr d *** gen_unfixed gen d rho r s
       | l · r =>
@@ -280,12 +247,12 @@ Module PCFG (params : PCFG_params).
     unfold natNNRMono.
     intros.
     revert s.
-    induction e using Expr'_rect;
+    induction e;
       intros;
       simpl;
       try fourier.
     +
-      destruct r0, r2.
+      destruct m, m0.
       apply Rplus_le_compat;
         apply Rmult_le_compat;
         try apply NNR_pos;
@@ -374,9 +341,9 @@ Module PCFG (params : PCFG_params).
       | ∅ => ∅
       | ε => ∅
       | term σ' => if Σ_dec σ σ' then ε else ∅
-      | U (l, l_prob) (r, r_prob) => U (eD σ rho l, l_prob) (eD σ rho r, r_prob)
-      | l · r => U (eD σ rho r, mkMonoFn (fun d => δ d rho l) δ_mono)
-                   (eD σ rho l · exprMap justNT r, constMono NNR_1)
+      | ⟨l, l_prob⟩ ∪ ⟨r, r_prob⟩ => ⟨eD σ rho l, l_prob⟩ ∪ ⟨eD σ rho r, r_prob⟩
+      | l · r => ⟨eD σ rho r, mkMonoFn (fun d => δ d rho l) δ_mono⟩
+                   ∪ ⟨eD σ rho l · exprMap justNT r, constMono NNR_1⟩
       | nonterm n => nonterm (derived σ n)
     end.
 
@@ -426,26 +393,21 @@ Module PCFG (params : PCFG_params).
     simpl.
     induction string_dec; simpl.
     +
-      injection a.
-      intros.
-      rewrite H, H0.
+      rewrite a.
       induction Σ_dec; tauto.
     +
-      induction Σ_dec.
-      -
-        simpl.
-        induction string_dec; auto.
-        rewrite a, a0 in *.
-        contradict b; auto.
-      -
-        auto.
+      induction Σ_dec; auto.
+      simpl.
+      induction string_dec; auto.
+      rewrite a, a0 in *.
+      contradict b; auto.
   Qed.
 
   Lemma U_commutes {NT} :
     forall d rho l lp r rp,
       eD_gen_commute_defn NT d rho l ->
       eD_gen_commute_defn NT d rho r ->
-      eD_gen_commute_defn NT d rho (U (l, lp) (r, rp)).
+      eD_gen_commute_defn NT d rho (⟨l, lp⟩ ∪ ⟨r, rp⟩).
   Proof.
     unfold eD_gen_commute_defn.
     intros.
@@ -482,7 +444,8 @@ Module PCFG (params : PCFG_params).
     replace (gen_unfixed (gen d rho) d rho r b) with (gen (S d) rho r b) by tauto.
 
     (* liftedD should return a superset of the existing rules *)
-    Lemma liftedD_preserves {NT} (e : Expr NT) (rho : rules NT) (s : string) (d : nat) :
+    Let liftedD_preserves
+        {NT} (e : Expr NT) (rho : rules NT) (s : string) (d : nat) :
       gen d rho e s = gen d (liftedD rho) (exprMap justNT e) s.
     Proof.
       revert s.
@@ -584,7 +547,7 @@ Defined.
 Fixpoint list_U {NT} (m : list (Expr NT * NNR)) : Expr NT :=
   match m with
     | nil => ∅
-    | (r, p) :: m' => U (r, constMono p) (list_U m', constMono NNR_1)
+    | (r, p) :: m' => ⟨r, constMono p⟩ ∪ ⟨list_U m', constMono NNR_1⟩
   end.
 
 Definition rho : rules NT :=
