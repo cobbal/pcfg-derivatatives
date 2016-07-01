@@ -1,33 +1,45 @@
 Require Import Reals.
 Require Import List.
 Require Import Fourier.
+Require Import Basics.
+(* Require Import Coq.Init.Tactics. *)
 
 (* Tested with coq 8.5pl1 *)
 
-Local Open Scope R_scope.
-
 (* my own version of non-negative reals, I think just for the better names *)
-Record NNR : Type := mkNNR { NNRr : R; NNR_pos : 0 <= NNRr }.
+Record NNR : Type := mkNNR { NNRr :> R; NNR_pos : 0 <= NNRr }.
 
-Program Definition NNR_0 := @mkNNR 0 _.
-Solve Obligations with fourier.
-Program Definition NNR_1 := @mkNNR 1 _.
-Solve Obligations with fourier.
+Ltac nnr_fourier :=
+  simpl;
+  destruct_all NNR;
+  repeat (intros; eauto;
+          try fourier;
+          try apply Rplus_le_compat;
+          try apply Rmult_le_compat;
+          try apply NNR_pos
+         ); fail.
 
-Program Definition NNR_plus (a b : NNR) : NNR := @mkNNR (NNRr a + NNRr b) _.
+Program Definition NNR_0 := mkNNR 0 _.
+Solve Obligations with nnr_fourier.
+Program Definition NNR_1 := mkNNR 1 _.
+Solve Obligations with nnr_fourier.
+Notation "0" := NNR_0.
+Notation "1" := NNR_1.
+
+Program Definition NNR_plus (a b : NNR) : NNR := @mkNNR (a + b) _.
 Next Obligation.
   case a, b.
-  simpl.
-  fourier.
-Defined.
-Infix "+++" := NNR_plus (at level 50, left associativity).
+  nnr_fourier.
+Qed.
 
-Program Definition NNR_mult (a b : NNR) : NNR := @mkNNR (NNRr a * NNRr b) _.
+Infix "+" := NNR_plus.
+
+Program Definition NNR_mult (a b : NNR) : NNR := @mkNNR (a * b) _.
 Next Obligation.
   case a, b.
   apply Rmult_le_pos; auto.
-Defined.
-Infix "***" := NNR_mult (at level 40, left associativity).
+Qed.
+Infix "*" := NNR_mult.
 
 (* Shorthand for decidability of T *)
 Definition dec_def (T : Type) := forall a b : T, {a = b} + {a <> b}.
@@ -41,21 +53,17 @@ End PCFG_params.
 
 Module PCFG (params : PCFG_params).
   Import params.
-
-  Definition string := list Σ.
-
   Hint Resolve Σ_dec.
 
-  SearchPattern ({list _ = list _} + {list _ <> list _}).
-
+  Definition string := list Σ.
   Definition string_dec := list_eq_dec Σ_dec.
 
   (* a useful definition of monotonic functions ℕ -> ℝ⁺, eqivalent (not needed
      or proven here) to the standard (a <= b -> f(a) <= f(b)). *)
   Definition natNNRMono (f : nat -> NNR) :=
-    forall d, NNRr (f d) <= NNRr (f (S d)).
+    forall d, f d <= f (S d).
 
-  Record monoFn := mkMonoFn { monoFnFn : nat -> NNR;
+  Record monoFn := mkMonoFn { monoFnFn :> nat -> NNR;
                               monoFnMono : natNNRMono monoFnFn }.
 
   (* definition of expressions, ideally U would take (Expr * NNR), but depth
@@ -123,14 +131,12 @@ Module PCFG (params : PCFG_params).
     end.
   Hint Unfold exprMap.
 
-  Definition const {A B} : A -> B -> A :=
-    fun x _ => x.
+  Check const.
 
   Program Definition constMono (x : NNR) : monoFn := mkMonoFn (const x) _.
   Next Obligation.
     unfold const, natNNRMono.
-    intros.
-    fourier.
+    nnr_fourier.
   Qed.
 
   Record pcfg {NT} := mkPcfg { pcfgRules : rules NT ;
@@ -143,12 +149,7 @@ Module PCFG (params : PCFG_params).
   (* a language is a discrete measure on strings *)
   Definition lang := string -> NNR.
 
-  (* First, some list/real utilities *)
-  Fixpoint finite_sum (l : list NNR) : NNR :=
-    match l with
-      | nil => NNR_0
-      | x :: xs => x +++ finite_sum xs
-    end.
+  Definition finite_sum : list NNR -> NNR := fold_right NNR_plus 0.
 
   Program Fixpoint finite_sum_eq_proof_irrelevence
           (l0 l1 : list NNR)
@@ -161,8 +162,8 @@ Module PCFG (params : PCFG_params).
       | _ :: _, nil => False_rect _ _
     end.
   Next Obligation.
-    apply f_equal2; auto.
-  Defined.
+    intuition.
+  Qed.
 
   Fixpoint relate_lists {A B} (P : A -> B -> Prop) (la : list A) (lb : list B) : Prop :=
     match la, lb with
@@ -191,13 +192,11 @@ Module PCFG (params : PCFG_params).
       | nil, _ :: _ => False_rect _ _
       | _ :: _, nil => False_rect _ _
     end.
-  Next Obligation.
-    fourier.
-  Qed.
+  Solve Obligations with nnr_fourier.
   Next Obligation.
     inversion map_le.
-    apply Rplus_le_compat; auto.
-  Defined.
+    nnr_fourier.
+  Qed.
 
   Fixpoint all_splits {A} (l : list A) : list (list A * list A) :=
   match l with
@@ -221,17 +220,17 @@ Module PCFG (params : PCFG_params).
            (s : string)
   : NNR :=
     match e with
-      | ∅ => NNR_0
-      | ε => if string_dec s nil then NNR_1 else NNR_0
-      | term c => if string_dec s (c :: nil) then NNR_1 else NNR_0
+      | ∅ => 0
+      | ε => if string_dec s nil then 1 else 0
+      | term c => if string_dec s (c :: nil) then 1 else 0
       | ⟨l, pl⟩ ∪ ⟨r, pr⟩ =>
-        monoFnFn pl d *** gen_unfixed gen d rho l s +++
-        monoFnFn pr d *** gen_unfixed gen d rho r s
+        pl d * gen_unfixed gen d rho l s +
+        pr d * gen_unfixed gen d rho r s
       | l · r =>
         finite_sum
-          (map (fun (s1s2 : string * string) =>
-                  let (s1, s2) := s1s2 in
-                  gen_unfixed gen d rho l s1 *** gen_unfixed gen d rho r s2)
+          (map (fun (lr : string * string) =>
+                  gen_unfixed gen d rho l (fst lr) *
+                  gen_unfixed gen d rho r (snd lr))
                (all_splits s))
       | nonterm nt => gen (rho nt) s
     end.
@@ -241,28 +240,21 @@ Module PCFG (params : PCFG_params).
         (gen'_mono : forall e s, natNNRMono (fun d => gen' d e s))
         (rho : rules NT)
         (e : Expr NT)
-        (s : string)
-  : natNNRMono (fun d => gen_unfixed (gen' d) d rho e s).
+  : forall s, natNNRMono (fun d => gen_unfixed (gen' d) d rho e s).
   Proof.
     unfold natNNRMono.
-    intros.
-    revert s.
     induction e;
       intros;
       simpl;
-      try fourier.
+      try nnr_fourier.
     +
-      destruct m, m0.
-      apply Rplus_le_compat;
-        apply Rmult_le_compat;
-        try apply NNR_pos;
-        auto.
+      destruct_all monoFn.
+      nnr_fourier.
     +
       apply finite_sum_all_le.
       repeat rewrite map_map.
       apply relate_lists_map.
-      destruct a.
-      apply Rmult_le_compat; try apply NNR_pos; auto.
+      nnr_fourier.
     +
       apply gen'_mono.
   Qed.
@@ -283,31 +275,13 @@ Module PCFG (params : PCFG_params).
     induction e, d using (pcfg_super_rect rho);
       intros;
       try (induction d; [apply NNR_pos; fail|]);
-      try apply NNR_pos;
       simpl;
-      try fourier.
-    -
-      apply Rplus_le_compat;
-      apply Rmult_le_compat;
-      try apply NNR_pos.
-      +
-        induction p0; auto.
-      +
-        apply IHd.
-      +
-        induction p1; auto.
-      +
-        apply IHd0.
-    -
-      apply finite_sum_all_le.
-      repeat rewrite map_map.
-      apply relate_lists_map.
-      induction a.
-      apply Rmult_le_compat; try apply NNR_pos.
-      apply IHd.
-      apply IHd0.
-    -
-      apply IHd.
+      try (destruct_all monoFn; nnr_fourier).
+
+    apply finite_sum_all_le.
+    repeat rewrite map_map.
+    apply relate_lists_map.
+    nnr_fourier.
   Qed.
 
   Definition pcfg_gen {NT} (depth : nat) (gr : pcfg NT) : lang :=
@@ -391,16 +365,13 @@ Module PCFG (params : PCFG_params).
     induction d; auto.
     unfold lD.
     simpl.
-    induction string_dec; simpl.
+    induction string_dec, Σ_dec; simpl; auto.
     +
       rewrite a.
-      induction Σ_dec; tauto.
+      auto.
     +
-      induction Σ_dec; auto.
-      simpl.
       induction string_dec; auto.
-      rewrite a, a0 in *.
-      contradict b; auto.
+      contradiction.
   Qed.
 
   Lemma U_commutes {NT} :
@@ -441,40 +412,32 @@ Module PCFG (params : PCFG_params).
     simpl.
     apply f_equal2; auto.
 
-    replace (gen_unfixed (gen d rho) d rho r b) with (gen (S d) rho r b) by tauto.
+    replace (gen_unfixed (gen d rho) d rho r b) with (gen (S d) rho r b) by auto.
 
     (* liftedD should return a superset of the existing rules *)
     Let liftedD_preserves
-        {NT} (e : Expr NT) (rho : rules NT) (s : string) (d : nat) :
-      gen d rho e s = gen d (liftedD rho) (exprMap justNT e) s.
+        {NT} (e : Expr NT) (rho : rules NT) (d : nat) :
+      forall s,
+        gen d rho e s = gen d (liftedD rho) (exprMap justNT e) s.
     Proof.
-      revert s.
       induction e, d using (pcfg_super_rect rho);
         unfold exprMap;
         fold @exprMap;
         intros;
-        auto;
-        try (induction d; tauto).
-      +
-        induction d; [tauto|].
+        eauto;
+        induction d; auto;
         simpl in *.
+      +
         rewrite IHd, IHd0.
         auto.
       +
-        induction d; [tauto|].
-        simpl in *.
         apply f_equal.
         apply map_ext.
         induction a.
         apply f_equal2; auto.
-      +
-        simpl.
-        rewrite IHd.
-        auto.
     Qed.
 
-    rewrite (liftedD_preserves r rho b (S d)).
-    simpl.
+    rewrite liftedD_preserves.
     auto.
   Qed.
 
@@ -538,27 +501,22 @@ Definition prod_1 : Expr NT := nonterm SS · nonterm SS.
 Definition prod_2 : Expr NT := nonterm SS · term Σx.
 Definition prod_3 : Expr NT := ε.
 
-Program Definition NNR_1_3 := @mkNNR (1/3) _.
-Next Obligation.
-  SearchPattern (_ * _ <= _ * _ -> _ <= _).
-  apply (Rmult_le_reg_l 3); fourier.
-Defined.
-
 Fixpoint list_U {NT} (m : list (Expr NT * NNR)) : Expr NT :=
   match m with
     | nil => ∅
     | (r, p) :: m' => ⟨r, constMono p⟩ ∪ ⟨list_U m', constMono NNR_1⟩
   end.
 
-Definition rho : rules NT :=
+Program Definition rho : rules NT :=
   (fun nt =>
      match nt with
        | SS =>
          list_U
-           ((prod_1, NNR_1_3) ::
-            (prod_2, NNR_1_3) ::
-            (prod_3, NNR_1_3) :: nil)
+           ((prod_1, mkNNR (1 / 3) _) ::
+            (prod_2, mkNNR (1 / 3) _) ::
+            (prod_3, mkNNR (1 / 3) _) :: nil)
      end).
+Solve Obligations with nnr_fourier.
 
 Definition g : pcfg NT := mkPcfg rho (rho SS).
 
